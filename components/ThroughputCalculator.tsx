@@ -2,697 +2,626 @@
 
 import React, { useMemo, useState } from "react";
 
-type FunnelStageId =
-  | "visitors"
-  | "leads"
-  | "mql"
-  | "sql"
-  | "opps"
-  | "wins";
-
-type FunnelStage = {
-  id: FunnelStageId;
-  label: string;
-  conversionRate: number; // 0–100 (%)
-  velocityDays: number;
+type FunnelInputs = {
+  visitors: number;
+  leads: number;
+  mqls: number;
+  sqls: number;
+  opps: number;
+  wins: number;
+  asp: number; // average selling price
+  periodLabel: string;
+  periodMonths: number;
 };
 
-type SourceId = "inbound" | "paid" | "outbound" | "partner";
-
-type Source = {
-  id: SourceId;
-  label: string;
-  share: number; // %
+type Benchmarks = {
+  visitorToLead: number;
+  leadToMql: number;
+  mqlToSql: number;
+  sqlToOpp: number;
+  oppToWin: number;
+  trafficGrowthPercent: number;
 };
 
-type Scenario = {
-  id: string;
-  label: string;
-  description: string;
-  adjustments: {
-    stageId: FunnelStageId;
-    conversionDelta?: number;
-    velocityDelta?: number;
-  }[];
+const defaultBaseline: FunnelInputs = {
+  visitors: 25000,
+  leads: 2000,
+  mqls: 600,
+  sqls: 250,
+  opps: 90,
+  wins: 24,
+  asp: 18000,
+  periodLabel: "Last 12 months",
+  periodMonths: 12,
 };
 
-type SingleThroughput = {
-  stageVolumes: Record<FunnelStageId, number>;
-  totalCycleDays: number;
-  arr: number;
+const defaultBenchmarks: Benchmarks = {
+  visitorToLead: 8,   // 8%
+  leadToMql: 30,      // 30%
+  mqlToSql: 45,       // 45%
+  sqlToOpp: 65,       // 65%
+  oppToWin: 25,       // 25%
+  trafficGrowthPercent: 0,
 };
 
-type ThroughputResult = SingleThroughput & {
-  bottleneckStageId: FunnelStageId | null;
-  pressureScores: Record<FunnelStageId, number>;
-  perSource: Record<SourceId, SingleThroughput>;
-};
+function safeRate(numerator: number, denominator: number): number {
+  if (!denominator || denominator <= 0) return 0;
+  return (numerator / denominator) * 100;
+}
 
-const defaultStages: FunnelStage[] = [
-  { id: "visitors", label: "Website Visitors", conversionRate: 5, velocityDays: 3 },
-  { id: "leads", label: "Leads", conversionRate: 25, velocityDays: 5 },
-  { id: "mql", label: "MQLs", conversionRate: 35, velocityDays: 7 },
-  { id: "sql", label: "SQLs", conversionRate: 40, velocityDays: 10 },
-  { id: "opps", label: "Opportunities", conversionRate: 30, velocityDays: 20 },
-  { id: "wins", label: "Closed Won", conversionRate: 100, velocityDays: 30 }
-];
+function toCurrency(value: number): string {
+  if (!Number.isFinite(value)) return "€0";
+  return new Intl.NumberFormat("en-IE", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
 
-const defaultSources: Source[] = [
-  { id: "inbound", label: "Inbound (SEO, content)", share: 40 },
-  { id: "paid", label: "Paid (search, social)", share: 35 },
-  { id: "outbound", label: "Outbound & SDR", share: 15 },
-  { id: "partner", label: "Partners & integrations", share: 10 }
-];
+export default function ThroughputLab() {
+  const [inputs, setInputs] = useState<FunnelInputs>(defaultBaseline);
+  const [benchmarks, setBenchmarks] = useState<Benchmarks>(defaultBenchmarks);
+  const [showBenchmarks, setShowBenchmarks] = useState(false);
 
-const scenarios: Scenario[] = [
-  {
-    id: "baseline",
-    label: "Baseline",
-    description: "Current performance without any changes.",
-    adjustments: []
-  },
-  {
-    id: "mql_lift",
-    label: "+5pp MQL → SQL",
-    description: "Tighten MQL definition, scoring, and handover to improve sales acceptance.",
-    adjustments: [{ stageId: "mql", conversionDelta: 5 }]
-  },
-  {
-    id: "velocity_boost",
-    label: "Faster sales cycle",
-    description: "Shorten cycle time with better enablement, offers, and approvals.",
-    adjustments: [
-      { stageId: "sql", velocityDelta: -5 },
-      { stageId: "opps", velocityDelta: -5 }
-    ]
-  }
-];
+  const baseline = useMemo(() => {
+    const {
+      visitors,
+      leads,
+      mqls,
+      sqls,
+      opps,
+      wins,
+      asp,
+      periodMonths,
+      periodLabel,
+    } = inputs;
 
-function applyScenario(baseStages: FunnelStage[], scenario: Scenario): FunnelStage[] {
-  if (!scenario || scenario.id === "baseline") return baseStages;
+    const vToL = safeRate(leads, visitors);
+    const lToM = safeRate(mqls, leads);
+    const mToS = safeRate(sqls, mqls);
+    const sToO = safeRate(opps, sqls);
+    const oToW = safeRate(wins, opps);
 
-  return baseStages.map((stage) => {
-    const adj = scenario.adjustments.find((a) => a.stageId === stage.id);
-    if (!adj) return stage;
+    const winsPerMonth =
+      periodMonths > 0 ? wins / periodMonths : 0;
+
+    const newArrInPeriod = wins * asp;
+    const arrRunRate =
+      periodMonths > 0 ? newArrInPeriod * (12 / periodMonths) : 0;
+
+    const conversionRates = [
+      { label: "Visitor → Lead", value: vToL },
+      { label: "Lead → MQL", value: lToM },
+      { label: "MQL → SQL", value: mToS },
+      { label: "SQL → Opportunity", value: sToO },
+      { label: "Opportunity → Win", value: oToW },
+    ];
 
     return {
-      ...stage,
-      conversionRate:
-        adj.conversionDelta !== undefined
-          ? Math.max(
-              0,
-              Math.min(100, stage.conversionRate + adj.conversionDelta)
-            )
-          : stage.conversionRate,
-      velocityDays:
-        adj.velocityDelta !== undefined
-          ? Math.max(1, stage.velocityDays + adj.velocityDelta)
-          : stage.velocityDays
+      periodLabel,
+      periodMonths,
+      winsPerMonth,
+      arrRunRate,
+      conversionRates,
+      newArrInPeriod,
     };
-  });
-}
+  }, [inputs]);
 
-function propagateFunnel(
-  stages: FunnelStage[],
-  startingVisitors: number,
-  avgDealSize: number,
-  winRate?: number
-): SingleThroughput {
-  const stageVolumes: Record<FunnelStageId, number> = {
-    visitors: startingVisitors,
-    leads: 0,
-    mql: 0,
-    sql: 0,
-    opps: 0,
-    wins: 0
-  };
+  const projection = useMemo(() => {
+    const { visitors, asp, periodMonths } = inputs;
+    const {
+      visitorToLead,
+      leadToMql,
+      mqlToSql,
+      sqlToOpp,
+      oppToWin,
+      trafficGrowthPercent,
+    } = benchmarks;
 
-  let current = startingVisitors;
+    const trafficFactor = 1 + trafficGrowthPercent / 100;
+    const adjVisitors = visitors * trafficFactor;
 
-  stages.forEach((stage, index) => {
-    if (index === 0) {
-      stageVolumes[stage.id] = current;
-      return;
-    }
-    const rate =
-      stage.id === "wins" && winRate !== undefined
-        ? winRate / 100
-        : stage.conversionRate / 100;
+    const leads = adjVisitors * (visitorToLead / 100);
+    const mqls = leads * (leadToMql / 100);
+    const sqls = mqls * (mqlToSql / 100);
+    const opps = sqls * (sqlToOpp / 100);
+    const wins = opps * (oppToWin / 100);
 
-    current = current * rate;
-    stageVolumes[stage.id] = current;
-  });
+    const winsPerPeriod = wins;
+    const winsPerMonth =
+      periodMonths > 0 ? winsPerPeriod / periodMonths : 0;
 
-  const totalCycleDays = stages.reduce(
-    (sum, stage) => sum + stage.velocityDays,
-    0
-  );
+    const newArrInPeriod = winsPerPeriod * asp;
+    const arrRunRate =
+      periodMonths > 0 ? newArrInPeriod * (12 / periodMonths) : 0;
 
-  const arr = stageVolumes.wins * avgDealSize * 12;
+    return {
+      adjVisitors,
+      winsPerMonth,
+      arrRunRate,
+      winsPerPeriod,
+      newArrInPeriod,
+    };
+  }, [inputs, benchmarks]);
 
-  return { stageVolumes, totalCycleDays, arr };
-}
-
-function calculateThroughput(
-  stages: FunnelStage[],
-  monthlyVisitors: number,
-  avgDealSize: number,
-  winRate: number | undefined,
-  sources: Source[]
-): ThroughputResult {
-  // Overall funnel
-  const overall = propagateFunnel(stages, monthlyVisitors, avgDealSize, winRate);
-
-  // Bottleneck scoring (independent of volume)
-  const pressureScores: Record<FunnelStageId, number> = {
-    visitors: 0,
-    leads: 0,
-    mql: 0,
-    sql: 0,
-    opps: 0,
-    wins: 0
-  };
-
-  stages.forEach((stage, index) => {
-    if (index === 0) return;
-    const convScore = 100 - stage.conversionRate;
-    const velScore = stage.velocityDays;
-    pressureScores[stage.id] = convScore * 0.7 + velScore * 0.3;
-  });
-
-  const sorted = stages
-    .filter((s) => s.id !== "visitors")
-    .sort(
-      (a, b) =>
-        pressureScores[b.id as FunnelStageId] -
-        pressureScores[a.id as FunnelStageId]
-    );
-
-  const bottleneckStageId = sorted[0]?.id ?? null;
-
-  // Per-source breakdown
-  const perSource: Record<SourceId, SingleThroughput> = {
-    inbound: propagateFunnel(stages, 0, avgDealSize, winRate),
-    paid: propagateFunnel(stages, 0, avgDealSize, winRate),
-    outbound: propagateFunnel(stages, 0, avgDealSize, winRate),
-    partner: propagateFunnel(stages, 0, avgDealSize, winRate)
-  };
-
-  const totalShare = sources.reduce((sum, s) => sum + s.share, 0) || 1;
-
-  sources.forEach((source) => {
-    const visitorsForSource = monthlyVisitors * (source.share / totalShare);
-    perSource[source.id] = propagateFunnel(
-      stages,
-      visitorsForSource,
-      avgDealSize,
-      winRate
-    );
-  });
-
-  return {
-    ...overall,
-    bottleneckStageId,
-    pressureScores,
-    perSource
-  };
-}
-
-const ThroughputCalculator: React.FC = () => {
-  const [baseStages, setBaseStages] = useState<FunnelStage[]>(defaultStages);
-  const [sources, setSources] = useState<Source[]>(defaultSources);
-  const [monthlyVisitors, setMonthlyVisitors] = useState(20000);
-  const [avgDealSize, setAvgDealSize] = useState(8000);
-  const [winRate, setWinRate] = useState<number | undefined>(20);
-  const [selectedScenarioId, setSelectedScenarioId] = useState("baseline");
-
-  const selectedScenario =
-    scenarios.find((s) => s.id === selectedScenarioId) || scenarios[0];
-
-  const scenarioStages = useMemo(
-    () => applyScenario(baseStages, selectedScenario),
-    [baseStages, selectedScenario]
-  );
-
-  const baselineResult = useMemo(
-    () =>
-      calculateThroughput(
-        baseStages,
-        monthlyVisitors,
-        avgDealSize,
-        winRate,
-        sources
-      ),
-    [baseStages, monthlyVisitors, avgDealSize, winRate, sources]
-  );
-
-  const scenarioResult = useMemo(
-    () =>
-      calculateThroughput(
-        scenarioStages,
-        monthlyVisitors,
-        avgDealSize,
-        winRate,
-        sources
-      ),
-    [scenarioStages, monthlyVisitors, avgDealSize, winRate, sources]
-  );
-
-  const totalSourceShare = sources.reduce((sum, s) => sum + s.share, 0);
-
-  const arrDelta =
-    scenarioResult.arr - baselineResult.arr;
-
-  const arrDeltaPct =
-    baselineResult.arr > 0
-      ? (arrDelta / baselineResult.arr) * 100
+  const arrLiftAbs = projection.arrRunRate - baseline.arrRunRate;
+  const arrLiftPct =
+    baseline.arrRunRate > 0
+      ? (arrLiftAbs / baseline.arrRunRate) * 100
       : 0;
 
-  const winsDelta =
-    scenarioResult.stageVolumes.wins - baselineResult.stageVolumes.wins;
+  // Simple bottleneck vs benchmarks: which stage has the biggest gap to benchmark
+  const bottleneck = useMemo(() => {
+    const map: { stage: string; gap: number }[] = [];
+    const [vToL, lToM, mToS, sToO, oToW] = baseline.conversionRates;
 
-  const winsDeltaPct =
-    baselineResult.stageVolumes.wins > 0
-      ? (winsDelta / baselineResult.stageVolumes.wins) * 100
-      : 0;
+    map.push({
+      stage: "Visitor → Lead",
+      gap: benchmarks.visitorToLead - vToL.value,
+    });
+    map.push({
+      stage: "Lead → MQL",
+      gap: benchmarks.leadToMql - lToM.value,
+    });
+    map.push({
+      stage: "MQL → SQL",
+      gap: benchmarks.mqlToSql - mToS.value,
+    });
+    map.push({
+      stage: "SQL → Opportunity",
+      gap: benchmarks.sqlToOpp - sToO.value,
+    });
+    map.push({
+      stage: "Opportunity → Win",
+      gap: benchmarks.oppToWin - oToW.value,
+    });
 
-  const cycleDelta =
-    scenarioResult.totalCycleDays - baselineResult.totalCycleDays;
+    // biggest positive gap (benchmark better than current)
+    const worst = map.sort((a, b) => b.gap - a.gap)[0];
+
+    return worst && worst.gap > 0 ? worst : null;
+  }, [baseline.conversionRates, benchmarks]);
+
+  const handleInputChange = (
+    field: keyof FunnelInputs,
+    value: string
+  ) => {
+    setInputs((prev) => ({
+      ...prev,
+      [field]:
+        field === "periodLabel"
+          ? value
+          : Number.isNaN(parseFloat(value))
+          ? 0
+          : parseFloat(value),
+    }));
+  };
+
+  const handleBenchmarkChange = (
+    field: keyof Benchmarks,
+    value: string
+  ) => {
+    setBenchmarks((prev) => ({
+      ...prev,
+      [field]: Number.isNaN(parseFloat(value))
+        ? 0
+        : parseFloat(value),
+    }));
+  };
+
+  const resetBenchmarks = () => {
+    setBenchmarks(defaultBenchmarks);
+  };
 
   return (
-    <div className="space-y-8">
-      {/* Top comparison cards */}
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-1 text-sm">
-          <div className="text-xs uppercase tracking-wide text-slate-400">
-            Projected ARR
-          </div>
-          <div className="flex items-baseline justify-between gap-4">
-            <div>
-              <div className="text-slate-300 text-xs">Baseline</div>
-              <div className="text-lg font-semibold text-slate-50">
-                €
-                {baselineResult.arr.toLocaleString(undefined, {
-                  maximumFractionDigits: 0
-                })}
-              </div>
-            </div>
-            <div>
-              <div className="text-slate-300 text-xs">Scenario</div>
-              <div className="text-lg font-semibold text-emerald-400">
-                €
-                {scenarioResult.arr.toLocaleString(undefined, {
-                  maximumFractionDigits: 0
-                })}
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-emerald-300 mt-1">
-            Delta: {arrDelta >= 0 ? "+" : "-"}
-            {Math.abs(arrDelta).toLocaleString(undefined, {
-              maximumFractionDigits: 0
-            })}{" "}
-            ({arrDeltaPct >= 0 ? "+" : ""}
-            {arrDeltaPct.toFixed(1)}%)
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-1 text-sm">
-          <div className="text-xs uppercase tracking-wide text-slate-400">
-            Wins per month
-          </div>
-          <div className="flex items-baseline justify-between gap-4">
-            <div>
-              <div className="text-slate-300 text-xs">Baseline</div>
-              <div className="text-lg font-semibold text-slate-50">
-                {baselineResult.stageVolumes.wins.toFixed(1)}
-              </div>
-            </div>
-            <div>
-              <div className="text-slate-300 text-xs">Scenario</div>
-              <div className="text-lg font-semibold text-emerald-400">
-                {scenarioResult.stageVolumes.wins.toFixed(1)}
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-emerald-300 mt-1">
-            Delta: {winsDelta >= 0 ? "+" : "-"}
-            {winsDelta.toFixed(1)} ({winsDeltaPct >= 0 ? "+" : ""}
-            {winsDeltaPct.toFixed(1)}%)
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-1 text-sm">
-          <div className="text-xs uppercase tracking-wide text-slate-400">
-            Total funnel cycle time
-          </div>
-          <div className="flex items-baseline justify-between gap-4">
-            <div>
-              <div className="text-slate-300 text-xs">Baseline</div>
-              <div className="text-lg font-semibold text-slate-50">
-                {baselineResult.totalCycleDays} days
-              </div>
-            </div>
-            <div>
-              <div className="text-slate-300 text-xs">Scenario</div>
-              <div className="text-lg font-semibold text-emerald-400">
-                {scenarioResult.totalCycleDays} days
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-emerald-300 mt-1">
-            Delta: {cycleDelta >= 0 ? "+" : ""}
-            {cycleDelta} days
-          </div>
-        </div>
-      </div>
-
-      {/* Scenario selector */}
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+    <div className="min-h-screen bg-slate-950 text-slate-50 flex justify-center px-4 py-10">
+      <div className="w-full max-w-6xl space-y-8">
+        {/* Header */}
+        <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h3 className="font-semibold text-sm">Scenario</h3>
-            <p className="text-xs text-slate-400">
-              Compare your current funnel with “what if” improvements.
+            <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+              SaaS Throughput & ARR Scenario Lab
+            </h1>
+            <p className="mt-1 text-sm text-slate-300 max-w-2xl">
+              Plug in real funnel data from a past period, compare it
+              to editable benchmarks, and see how changes to traffic
+              and conversion rates impact ARR run rate. Perfect for
+              “where can we move the needle?” conversations.
             </p>
           </div>
-          <select
-            value={selectedScenarioId}
-            onChange={(e) => setSelectedScenarioId(e.target.value)}
-            className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs"
-          >
-            {scenarios.map((scenario) => (
-              <option key={scenario.id} value={scenario.id}>
-                {scenario.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        {selectedScenario.description && (
-          <p className="mt-2 text-xs text-slate-400">
-            {selectedScenario.description}
-          </p>
-        )}
-      </div>
-
-      {/* Inputs */}
-      <div className="grid lg:grid-cols-2 gap-6">
-        {/* Left: funnel inputs */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-4">
-          <h3 className="font-semibold text-sm">Funnel inputs</h3>
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <label className="space-y-1">
-              <span className="text-slate-300 text-xs">
-                Monthly website visitors
-              </span>
-              <input
-                type="number"
-                value={monthlyVisitors}
-                onChange={(e) =>
-                  setMonthlyVisitors(Number(e.target.value) || 0)
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="text-slate-300 text-xs">Average deal size (€)</span>
-              <input
-                type="number"
-                value={avgDealSize}
-                onChange={(e) => setAvgDealSize(Number(e.target.value) || 0)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="text-slate-300 text-xs">Win rate (%)</span>
-              <input
-                type="number"
-                value={winRate ?? ""}
-                onChange={(e) =>
-                  setWinRate(
-                    e.target.value === "" ? undefined : Number(e.target.value) || 0
-                  )
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-              />
-            </label>
-          </div>
-
-          <div className="mt-4 space-y-2">
-            <h4 className="font-medium text-xs text-slate-200">
-              Funnel stages (baseline)
-            </h4>
-            <p className="text-xs text-slate-400">
-              Edit your current reality. Scenarios apply deltas on top of this.
+          <div className="rounded-xl border border-slate-700 bg-slate-900/40 px-4 py-3 text-xs text-slate-300 max-w-xs">
+            <p className="font-medium text-slate-100">
+              How to use this
             </p>
-            <div className="space-y-2 text-xs">
-              {baseStages.map((stage, index) => (
-                <div
-                  key={stage.id}
-                  className="grid grid-cols-[1.8fr,1fr,1fr] gap-2 items-center"
-                >
-                  <div className="font-medium text-slate-200">
-                    {index + 1}. {stage.label}
-                  </div>
-                  <label className="flex items-center gap-1">
-                    <span className="text-slate-400">Conv%</span>
-                    <input
-                      type="number"
-                      value={stage.conversionRate}
-                      onChange={(e) => {
-                        const val = Number(e.target.value) || 0;
-                        setBaseStages((prev) =>
-                          prev.map((s) =>
-                            s.id === stage.id ? { ...s, conversionRate: val } : s
-                          )
-                        );
-                      }}
-                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1"
-                    />
-                  </label>
-                  <label className="flex items-center gap-1">
-                    <span className="text-slate-400">Days</span>
-                    <input
-                      type="number"
-                      value={stage.velocityDays}
-                      onChange={(e) => {
-                        const val = Number(e.target.value) || 0;
-                        setBaseStages((prev) =>
-                          prev.map((s) =>
-                            s.id === stage.id ? { ...s, velocityDays: val } : s
-                          )
-                        );
-                      }}
-                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1"
-                    />
-                  </label>
-                </div>
-              ))}
-            </div>
+            <ol className="mt-1 list-decimal list-inside space-y-1">
+              <li>Enter your actuals for any past period.</li>
+              <li>Adjust benchmarks and traffic growth.</li>
+              <li>Compare baseline vs projected ARR run rate.</li>
+            </ol>
           </div>
-        </div>
+        </header>
 
-        {/* Right: pipeline sources and snapshot */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-4">
-          <h3 className="font-semibold text-sm">Pipeline sources</h3>
-          <p className="text-xs text-slate-400">
-            Model how your channel mix supports the overall pipeline.
-          </p>
-          <div className="space-y-2 text-xs">
-            {sources.map((source) => (
-              <div
-                key={source.id}
-                className="grid grid-cols-[1.6fr,1fr] gap-2 items-center"
-              >
-                <div className="font-medium text-slate-200">
-                  {source.label}
+        {/* Layout: Inputs + Benchmarks / Metrics */}
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+          {/* Left column: Baseline inputs */}
+          <section className="space-y-6">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 space-y-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <h2 className="text-lg font-semibold">
+                  1. Baseline performance
+                </h2>
+                <p className="text-xs text-slate-300">
+                  Use real data from last quarter, last 12 months, or
+                  any period you want to analyse.
+                </p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-300">
+                    Period label
+                  </label>
+                  <input
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                    value={inputs.periodLabel}
+                    onChange={(e) =>
+                      handleInputChange(
+                        "periodLabel",
+                        e.target.value
+                      )
+                    }
+                    placeholder="Last 12 months"
+                  />
                 </div>
-                <label className="flex items-center gap-1">
-                  <span className="text-slate-400">Share%</span>
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-300">
+                    Period length (months)
+                  </label>
                   <input
                     type="number"
-                    value={source.share}
-                    onChange={(e) => {
-                      const val = Number(e.target.value) || 0;
-                      setSources((prev) =>
-                        prev.map((s) =>
-                          s.id === source.id ? { ...s, share: val } : s
-                        )
-                      );
-                    }}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1"
+                    min={1}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                    value={inputs.periodMonths}
+                    onChange={(e) =>
+                      handleInputChange(
+                        "periodMonths",
+                        e.target.value
+                      )
+                    }
                   />
-                </label>
+                </div>
               </div>
-            ))}
-          </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Total: {totalSourceShare}%{" "}
-            {totalSourceShare !== 100 && "(tip: aim for about 100 percent)"}
-          </p>
 
-          <div className="mt-4 rounded-xl bg-slate-950/80 border border-slate-800 p-3 text-xs space-y-2">
-            <div className="font-semibold text-slate-100">
-              Funnel snapshot (baseline, per month)
+              <div className="grid gap-4 sm:grid-cols-3">
+                {(
+                  [
+                    ["visitors", "Website visitors"],
+                    ["leads", "Leads / signups"],
+                    ["mqls", "MQLs"],
+                    ["sqls", "SQLs"],
+                    ["opps", "Opportunities"],
+                    ["wins", "Wins"],
+                  ] as [keyof FunnelInputs, string][]
+                ).map(([key, label]) => (
+                  <div key={key} className="space-y-1">
+                    <label className="text-xs text-slate-300">
+                      {label}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                      value={inputs[key]}
+                      onChange={(e) =>
+                        handleInputChange(key, e.target.value)
+                      }
+                    />
+                  </div>
+                ))}
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-300">
+                    Average deal size (ASP)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                    value={inputs.asp}
+                    onChange={(e) =>
+                      handleInputChange("asp", e.target.value)
+                    }
+                  />
+                </div>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-1">
-              <span>Visitors to Leads</span>
-              <span className="text-right">
-                {Math.round(baselineResult.stageVolumes.visitors)} →{" "}
-                {Math.round(baselineResult.stageVolumes.leads)}
-              </span>
-              <span>Leads to MQL</span>
-              <span className="text-right">
-                {Math.round(baselineResult.stageVolumes.leads)} →{" "}
-                {Math.round(baselineResult.stageVolumes.mql)}
-              </span>
-              <span>MQL to SQL</span>
-              <span className="text-right">
-                {Math.round(baselineResult.stageVolumes.mql)} →{" "}
-                {Math.round(baselineResult.stageVolumes.sql)}
-              </span>
-              <span>SQL to Opps</span>
-              <span className="text-right">
-                {Math.round(baselineResult.stageVolumes.sql)} →{" "}
-                {Math.round(baselineResult.stageVolumes.opps)}
-              </span>
-              <span>Opps to Wins</span>
-              <span className="text-right">
-                {Math.round(baselineResult.stageVolumes.opps)} →{" "}
-                {Math.round(baselineResult.stageVolumes.wins)}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Per-source comparison for scenario */}
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3 text-xs">
-        <h3 className="font-semibold text-sm">
-          Scenario impact by source (wins & ARR / month)
-        </h3>
-        <p className="text-slate-400">
-          Use this to tell the story of where marketing and sales effort should
-          go first. Values are for the selected scenario.
-        </p>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-800">
-                <th className="py-2 pr-4">Source</th>
-                <th className="py-2 pr-4 text-right">Wins / month</th>
-                <th className="py-2 pr-4 text-right">ARR / year (€)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sources.map((source) => {
-                const res = scenarioResult.perSource[source.id];
-                return (
-                  <tr
-                    key={source.id}
-                    className="border-b border-slate-900 last:border-0"
+            {/* Baseline funnel summary */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-lg font-semibold">
+                  Baseline funnel snapshot
+                </h2>
+                <span className="text-xs text-slate-300">
+                  {baseline.periodLabel} • {baseline.periodMonths}{" "}
+                  months
+                </span>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-4">
+                  <p className="text-xs text-slate-400 mb-1">
+                    ARR run rate (baseline)
+                  </p>
+                  <p className="text-xl font-semibold">
+                    {toCurrency(baseline.arrRunRate)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Based on wins and ASP over this period.
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-4">
+                  <p className="text-xs text-slate-400 mb-1">
+                    Wins per month
+                  </p>
+                  <p className="text-xl font-semibold">
+                    {baseline.winsPerMonth.toFixed(1)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Average across the selected period.
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-4">
+                  <p className="text-xs text-slate-400 mb-1">
+                    New ARR in period
+                  </p>
+                  <p className="text-xl font-semibold">
+                    {toCurrency(baseline.newArrInPeriod)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    New business only (excludes expansion/churn).
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-2 grid gap-3 md:grid-cols-5">
+                {baseline.conversionRates.map((r) => (
+                  <div
+                    key={r.label}
+                    className="rounded-lg bg-slate-950/40 border border-slate-800 p-3"
                   >
-                    <td className="py-2 pr-4">{source.label}</td>
-                    <td className="py-2 pr-4 text-right">
-                      {res.stageVolumes.wins.toFixed(1)}
-                    </td>
-                    <td className="py-2 pr-4 text-right">
-                      €
-                      {res.arr.toLocaleString(undefined, {
-                        maximumFractionDigits: 0
-                      })}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                    <p className="text-[11px] text-slate-400">
+                      {r.label}
+                    </p>
+                    <p className="text-base font-semibold">
+                      {r.value.toFixed(1)}%
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
 
-      {/* Bottleneck & experiment ideas */}
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3 text-xs">
-        <h3 className="font-semibold text-sm">Bottleneck and experiment ideas</h3>
-        <p className="text-slate-400">
-          Fix the tightest bottleneck first, then re-run the model and see how
-          ARR and wins move by source.
-        </p>
-        {baselineResult.bottleneckStageId && (
-          <div className="text-slate-200">
-            <span className="font-medium">
-              Primary bottleneck (baseline):{" "}
-              {
-                baseStages.find(
-                  (s) => s.id === baselineResult.bottleneckStageId
-                )?.label
-              }
-            </span>
-            <ul className="mt-2 list-disc list-inside space-y-1 text-slate-300">
-              {baselineResult.bottleneckStageId === "mql" && (
-                <>
-                  <li>
-                    Tighten MQL definition, scoring, and routing so sales only see
-                    higher intent leads.
-                  </li>
-                  <li>
-                    Refresh lead magnets and forms to capture richer qualifying data.
-                  </li>
-                  <li>
-                    Launch nurture tracks tailored to segment, problem, and intent.
-                  </li>
-                </>
+          {/* Right column: Benchmarks + Projection */}
+          <section className="space-y-6">
+            {/* Benchmarks */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-lg font-semibold">
+                  2. Benchmarks and assumptions
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setShowBenchmarks((s) => !s)}
+                  className="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-950/60 hover:bg-slate-900 transition"
+                >
+                  {showBenchmarks ? "Hide" : "Edit"} benchmarks
+                </button>
+              </div>
+              <p className="text-xs text-slate-300">
+                Use sensible B2B SaaS benchmarks, then adjust them to
+                match your market. You can also model traffic growth
+                from new channels or better conversion earlier in the
+                funnel.
+              </p>
+
+              {showBenchmarks && (
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {(
+                      [
+                        ["visitorToLead", "Visitor → Lead (%)"],
+                        ["leadToMql", "Lead → MQL (%)"],
+                        ["mqlToSql", "MQL → SQL (%)"],
+                        ["sqlToOpp", "SQL → Opportunity (%)"],
+                        ["oppToWin", "Opportunity → Win (%)"],
+                      ] as [keyof Benchmarks, string][]
+                    ).map(([key, label]) => (
+                      <div key={key} className="space-y-1">
+                        <label className="text-xs text-slate-300">
+                          {label}
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                          value={benchmarks[key]}
+                          onChange={(e) =>
+                            handleBenchmarkChange(
+                              key,
+                              e.target.value
+                            )
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-[2fr_1fr] items-end">
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-300">
+                        Traffic growth vs baseline (%)
+                      </label>
+                      <input
+                        type="number"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                        value={benchmarks.trafficGrowthPercent}
+                        onChange={(e) =>
+                          handleBenchmarkChange(
+                            "trafficGrowthPercent",
+                            e.target.value
+                          )
+                        }
+                        placeholder="e.g. 25"
+                      />
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Optional: simulate extra qualified traffic
+                        from new channels, SEO, or partner plays.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={resetBenchmarks}
+                      className="text-xs h-9 rounded-lg border border-slate-700 bg-slate-950 hover:bg-slate-900 transition"
+                    >
+                      Reset to defaults
+                    </button>
+                  </div>
+                </div>
               )}
-              {baselineResult.bottleneckStageId === "sql" && (
-                <>
-                  <li>
-                    Add pre-demo discovery or qualification steps to reduce no
-                    shows and misfit meetings.
-                  </li>
-                  <li>
-                    Improve talk tracks and proof for core use cases and segments.
-                  </li>
-                  <li>
-                    Share more product context and recordings with sales to align
-                    on what a good SQL looks like.
-                  </li>
-                </>
-              )}
-              {baselineResult.bottleneckStageId === "opps" && (
-                <>
-                  <li>
-                    Introduce ROI models and pilots to de-risk decisions for
-                    buying committees.
-                  </li>
-                  <li>
-                    Multi-thread into finance, operations, and IT earlier.
-                  </li>
-                  <li>
-                    Simplify commercial packaging to shorten approvals.
-                  </li>
-                </>
-              )}
-              {(baselineResult.bottleneckStageId === "leads" ||
-                baselineResult.bottleneckStageId === "visitors") && (
-                <>
-                  <li>
-                    Test new traffic sources and higher-intent content (comparisons,
-                    buyer guides, calculators).
-                  </li>
-                  <li>
-                    Run CRO experiments on key landing pages and sign-up flows.
-                  </li>
-                  <li>
-                    Expand partner and integration-led campaigns to tap into
-                    existing demand pools.
-                  </li>
-                </>
-              )}
-            </ul>
-          </div>
-        )}
+            </div>
+
+            {/* Projection */}
+            <div className="rounded-2xl border border-emerald-600/60 bg-slate-900/90 p-5 space-y-4">
+              <h2 className="text-lg font-semibold">
+                3. Projection vs baseline
+              </h2>
+              <p className="text-xs text-slate-200">
+                Using your baseline visitors and period length, plus
+                benchmark conversion rates and traffic growth, this
+                estimates projected wins and ARR run rate.
+              </p>
+
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-4">
+                  <p className="text-xs text-slate-400 mb-1">
+                    Projected ARR run rate
+                  </p>
+                  <p className="text-xl font-semibold text-emerald-300">
+                    {toCurrency(projection.arrRunRate)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    If you hit these benchmarks and assumptions.
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-4">
+                  <p className="text-xs text-slate-400 mb-1">
+                    Lift vs baseline
+                  </p>
+                  <p className="text-xl font-semibold">
+                    {arrLiftAbs >= 0 ? "+" : ""}
+                    {toCurrency(arrLiftAbs)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    {baseline.arrRunRate > 0 ? (
+                      <>
+                        {arrLiftPct >= 0 ? "+" : ""}
+                        {arrLiftPct.toFixed(1)} percent vs current
+                        run rate.
+                      </>
+                    ) : (
+                      "Baseline ARR run rate is zero."
+                    )}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-4">
+                  <p className="text-xs text-slate-400 mb-1">
+                    Projected wins / month
+                  </p>
+                  <p className="text-xl font-semibold">
+                    {projection.winsPerMonth.toFixed(1)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Based on benchmark funnel and traffic assumptions.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-lg bg-slate-950/60 border border-slate-800 p-4">
+                  <p className="text-xs font-semibold text-slate-200 mb-1">
+                    Baseline vs projected at a glance
+                  </p>
+                  <ul className="text-[11px] text-slate-300 space-y-1.5">
+                    <li>
+                      Baseline ARR run rate:{" "}
+                      <span className="font-medium">
+                        {toCurrency(baseline.arrRunRate)}
+                      </span>
+                    </li>
+                    <li>
+                      Projected ARR run rate:{" "}
+                      <span className="font-medium">
+                        {toCurrency(projection.arrRunRate)}
+                      </span>
+                    </li>
+                    <li>
+                      Baseline visitors (period):{" "}
+                      <span className="font-medium">
+                        {inputs.visitors.toLocaleString()}
+                      </span>
+                    </li>
+                    <li>
+                      Projected visitors (with growth):{" "}
+                      <span className="font-medium">
+                        {Math.round(
+                          projection.adjVisitors
+                        ).toLocaleString()}
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="rounded-lg bg-slate-950/60 border border-slate-800 p-4">
+                  <p className="text-xs font-semibold text-slate-200 mb-1">
+                    Bottleneck vs benchmark
+                  </p>
+                  {bottleneck ? (
+                    <p className="text-[11px] text-slate-300">
+                      Your biggest gap to benchmark is at{" "}
+                      <span className="font-semibold">
+                        {bottleneck.stage}
+                      </span>
+                      , where you are about{" "}
+                      <span className="font-semibold">
+                        {bottleneck.gap.toFixed(1)} percentage points
+                      </span>{" "}
+                      below your target. This is likely the highest
+                      leverage place to focus experiments.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-300">
+                      Your funnel is close to or above the current
+                      benchmarks across all stages. You can now:
+                      <br />
+                      • push on traffic growth, or
+                      <br />
+                      • tighten qualification and deal size.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-400">
+                Use this view in interviews or strategy sessions: load
+                in real data from the last quarter or year, align on
+                realistic benchmarks, and then work backwards from the
+                projected ARR gap to prioritised plays.
+              </p>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   );
-};
-
-export default ThroughputCalculator;
+}
